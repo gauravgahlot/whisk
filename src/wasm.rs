@@ -96,3 +96,36 @@ fn decode_leb128(bytes: &[u8]) -> (u32, usize) {
 
     (result, count) // Return the decoded value and the number of bytes used
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_decode_leb128() {
+        let data = vec![0xE5, 0x8E, 0x26];
+        let (value, size) = decode_leb128(&data);
+        assert_eq!(value, 624485);
+        assert_eq!(size, 3);
+    }
+
+    #[test]
+    fn test_parse_sections() {
+        let data = vec![
+            0x01, 0x05, 0x01, 0x60, 0x00, 0x01, 0x7F, // type section
+            0x03, 0x02, 0x01, 0x00, // function section
+        ];
+
+        let sections = parse(&data);
+
+        // type section assertions
+        assert!(sections.contains_key(&1));
+        let tsec = sections.get(&1).unwrap();
+        assert_eq!(*tsec, vec![0x01, 0x60, 0x00, 0x01, 0x7F]);
+
+        // function section assertions
+        assert!(sections.contains_key(&3));
+        let fsec = sections.get(&3).unwrap();
+        assert_eq!(*fsec, vec![0x01, 0x00]);
+    }
+}
