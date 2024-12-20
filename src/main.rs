@@ -8,7 +8,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Err("invalid wasm file")?
     }
 
-    println!("valid wasm file");
+    wasm::parse(&wasm_bytes);
 
     Ok(())
 }
