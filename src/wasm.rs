@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 /// 4-byte magic number. The string `\0asm`.
 const MAGIC_NUMBER: &[u8] = &[0x00, 0x61, 0x73, 0x6D];
 
@@ -8,49 +10,89 @@ pub(crate) fn validate(bytes: &[u8]) -> bool {
     &bytes[0..4] == MAGIC_NUMBER && &bytes[4..8] == WASM_BIN_FMT_VERSION
 }
 
-pub(crate) fn parse(mut bytes: &[u8]) {
-    // skip the 8-byte Wasm header
-    bytes = &bytes[8..];
+pub(crate) fn parse(bytes: &[u8]) -> HashMap<u8, Vec<u8>> {
+    let mut sections: HashMap<u8, Vec<u8>> = HashMap::new();
+    let mut idx = 0;
 
-    while !bytes.is_empty() {
-        let section_id = &bytes[0];
-        let (content_len, len_bytes) = decode_leb128(&bytes[1..]);
+    while idx < bytes.len() {
+        let section_id = bytes[idx];
+        idx += 1;
 
-        // skip section_id and bytes required to encode content_len
-        let content_start = 1 + len_bytes;
-        let content_end = content_start + content_len;
+        let (payload_len, len_bytes) = decode_leb128(&bytes[idx..]);
+        idx += len_bytes;
 
-        // read the content
-        let _content = &bytes[content_start..content_end];
+        let payload = bytes[idx..idx + payload_len as usize].to_vec();
+        idx += payload_len as usize;
 
-        match section_id {
-            1 => println!("type section found"),
-            3 => println!("function section found"),
-            10 => println!("code section found"),
-            _ => println!("unknown section: {}", section_id),
-        }
-
-        // move to the next section
-        bytes = &bytes[content_end..];
+        sections.insert(section_id, payload);
     }
+
+    sections
 }
 
-fn decode_leb128(mut bytes: &[u8]) -> (usize, usize) {
+pub(crate) fn parse_type_section(payload: &[u8]) -> Vec<(Vec<u8>, Vec<u8>)> {
+    let mut functions = Vec::new();
+    let mut idx = 0;
+
+    let num_types = payload[idx];
+    idx += 1; // move past the type count
+
+    for _ in 0..num_types {
+        let func_type = payload[idx];
+        idx += 1;
+
+        // continue if not a function type
+        if func_type != 0x60 {
+            continue;
+        }
+
+        let params_count = payload[idx] as usize;
+        idx += 1;
+        let params = payload[idx..idx + params_count].to_vec();
+        idx += params_count;
+
+        let result_count = payload[idx] as usize;
+        idx += 1;
+        let results = payload[idx..idx + result_count].to_vec();
+        idx += result_count;
+
+        functions.push((params, results));
+    }
+
+    functions
+}
+
+pub(crate) fn parse_function_section(payload: &[u8]) -> Vec<u32> {
+    let mut functions = Vec::new();
+    let mut idx = 0;
+
+    let fn_count = payload[idx] as usize;
+    idx += 1; // move past the function count
+
+    for _ in 0..fn_count {
+        let type_index = payload[idx] as u32;
+        idx += 1;
+        functions.push(type_index);
+    }
+
+    functions
+}
+
+fn decode_leb128(bytes: &[u8]) -> (u32, usize) {
     let mut result = 0;
     let mut shift = 0;
-    let mut size = 0;
+    let mut count = 0;
 
-    while let Some(&byte) = bytes.first() {
-        bytes = &bytes[1..];
-        size += 1;
-
-        result |= ((byte & 0x7F) as usize) << shift;
+    for &byte in bytes {
+        result |= ((byte & 0x7F) as u32) << shift; // Take 7 bits and shift them into position
         shift += 7;
+        count += 1;
 
         if byte & 0x80 == 0 {
+            // If MSB is 0, we've reached the last byte
             break;
         }
     }
 
-    (result, size) // Return decoded value and size in bytes
+    (result, count) // Return the decoded value and the number of bytes used
 }
