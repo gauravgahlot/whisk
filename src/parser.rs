@@ -135,11 +135,13 @@ pub(crate) fn parse_code_section(payload: &[u8]) -> Vec<(Vec<(u32, u8)>, Vec<u8>
             let (count, count_bytes) = leb128::decode(&fn_body[bidx..]);
             bidx += count_bytes;
 
-            // 1 byte for the type (e.g., 0x7F for i32, 0x7E for i64)
-            let local_type = fn_body[bidx];
-            bidx += 1;
+            if bidx < fn_body.len() {
+                // 1 byte for the type (e.g., 0x7F for i32, 0x7E for i64)
+                let local_type = fn_body[bidx];
+                bidx += 1;
 
-            locals.push((count, local_type));
+                locals.push((count, local_type));
+            }
         }
 
         // rest is the instruction sequence
