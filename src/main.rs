@@ -2,10 +2,22 @@ mod executor;
 mod leb128;
 mod parser;
 
+use std::env;
 use std::io::Read;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let wasm_bytes = read_wasm_file("bin/wat/hello.wasm")?;
+    let args: Vec<_> = env::args().skip(1).collect();
+
+    if args.len() == 0 {
+        return Ok(());
+    }
+
+    if args.len() > 1 {
+        println!("exepected exactly one argument");
+        return Ok(());
+    }
+
+    let wasm_bytes = read_wasm_file(args[0].as_str())?;
     if !parser::validate(&wasm_bytes) {
         Err("invalid wasm file")?
     }
