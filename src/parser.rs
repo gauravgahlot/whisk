@@ -105,7 +105,7 @@ pub(crate) fn parse_function_section(payload: &[u8]) -> Vec<u32> {
     functions
 }
 
-/// Returns Vec<(Vec<(locals_count, locals_type)>, Vec<instructions>)>
+/// Returns `Vec<(Vec<(locals_count, locals_type)>, Vec<instructions>)`>
 pub(crate) fn parse_code_section(payload: &[u8]) -> Vec<(Vec<(u32, u8)>, Vec<u8>)> {
     let mut entries = Vec::new();
 
