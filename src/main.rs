@@ -1,3 +1,4 @@
+mod leb128;
 mod wasm;
 
 use std::io::Read;

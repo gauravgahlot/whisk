@@ -1,3 +1,5 @@
+use super::leb128;
+
 use std::collections::HashMap;
 
 /// 4-byte magic number. The string `\0asm`.
@@ -27,7 +29,7 @@ pub(crate) fn parse_sections(bytes: &[u8]) -> HashMap<u8, Vec<u8>> {
             break; // Prevent out-of-bounds access
         }
 
-        let (payload_len, len_bytes) = decode_leb128(&bytes[idx..]);
+        let (payload_len, len_bytes) = leb128::decode(&bytes[idx..]);
         idx += len_bytes;
 
         // Ensure we have enough bytes for the payload
@@ -113,7 +115,7 @@ pub(crate) fn parse_code_section(payload: &[u8]) -> Vec<(Vec<(u32, u8)>, Vec<u8>
 
     for _ in 0..entry_count {
         // decode the size of the function entry
-        let (fn_len, len_bytes) = decode_leb128(&payload[idx..]);
+        let (fn_len, len_bytes) = leb128::decode(&payload[idx..]);
         idx += len_bytes;
 
         // extract the function body
@@ -124,13 +126,13 @@ pub(crate) fn parse_code_section(payload: &[u8]) -> Vec<(Vec<(u32, u8)>, Vec<u8>
         let mut bidx = 0;
 
         // parse the local count
-        let (locals_count, len_bytes) = decode_leb128(&fn_body[bidx..]);
+        let (locals_count, len_bytes) = leb128::decode(&fn_body[bidx..]);
         bidx += len_bytes;
 
         let mut locals = vec![];
         for _ in 0..locals_count {
             // parse each local declaration (count, type)
-            let (count, count_bytes) = decode_leb128(&fn_body[bidx..]);
+            let (count, count_bytes) = leb128::decode(&fn_body[bidx..]);
             bidx += count_bytes;
 
             // 1 byte for the type (e.g., 0x7F for i32, 0x7E for i64)
@@ -150,41 +152,9 @@ pub(crate) fn parse_code_section(payload: &[u8]) -> Vec<(Vec<(u32, u8)>, Vec<u8>
     entries
 }
 
-fn decode_leb128(bytes: &[u8]) -> (u32, usize) {
-    let mut result = 0;
-    let mut shift = 0;
-    let mut count = 0;
-
-    for &byte in bytes {
-        result |= ((byte & 0x7F) as u32) << shift; // Take 7 bits and shift them into position
-        shift += 7;
-        count += 1;
-
-        if byte & 0x80 == 0 {
-            // If MSB is 0, we've reached the last byte
-            break;
-        }
-    }
-
-    (result, count) // Return the decoded value and the number of bytes used
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_decode_leb128() {
-        let data = [0x7F];
-        let (value, size) = decode_leb128(&data);
-        assert_eq!(value, 127);
-        assert_eq!(size, 1);
-
-        let data = vec![0xE5, 0x8E, 0x26];
-        let (value, size) = decode_leb128(&data);
-        assert_eq!(value, 624485);
-        assert_eq!(size, 3);
-    }
 
     #[test]
     fn test_parse_sections() {
