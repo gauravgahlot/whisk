@@ -7,7 +7,7 @@
 
   <p>
     <a href="https://github.com/gauravgahlot/whisk/actions?query=workflow%3ACI"><img src="https://github.com/gauravgahlot/whisk/actions/workflows/ci.yaml/badge.svg" alt="build status" /></a>
-    <a href="https://docs.rs/whisk"><img src="https://docs.rs/whisk/badge.svg" alt="Documentation Status" /></a>
+    <!-- <a href="https://docs.rs/whisk"><img src="https://docs.rs/whisk/badge.svg" alt="Documentation Status" /></a> -->
   </p>
 </div>
 
