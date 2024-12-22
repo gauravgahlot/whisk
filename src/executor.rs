@@ -1,4 +1,5 @@
 use super::leb128;
+use super::registry;
 
 /// `OperandStack` stores the intermediate values during execution.
 struct OperandStack {
@@ -48,17 +49,20 @@ impl Func {
 
 /// `Context` is the execution context that stores:
 ///     1. the operand stack
-///     2. local variables
+///     2. local variables for current function
+///     3. linear memory
 pub(crate) struct Context {
     stack: OperandStack,
     locals: Vec<i32>,
+    pub memory: Vec<u8>,
 }
 
 impl Context {
     /// Create a new execution `Context`
-    pub(crate) fn new() -> Self {
+    pub(crate) fn new(memory_size: usize) -> Self {
         Self {
             locals: Vec::new(),
+            memory: vec![0; memory_size],
             stack: OperandStack::new(),
         }
     }
@@ -66,6 +70,7 @@ impl Context {
 
 /// `OpCode` defines a (sub)set of supported WebAssembly instructions
 enum OpCode {
+    Call(u32),
     LocalGet(u32),
     LocalSet(u32),
     I32Constant(i32),
@@ -81,6 +86,10 @@ enum OpCode {
 /// `(OpCode, index)`
 fn decode_instruction(bytes: &[u8]) -> (OpCode, usize) {
     match bytes[0] {
+        0x10 => {
+            let (index, size) = leb128::decode(&bytes[1..]);
+            (OpCode::Call(index as u32), 1 + size)
+        }
         0x20 => {
             let (index, size) = leb128::decode(&bytes[1..]);
             (OpCode::LocalGet(index as u32), 1 + size)
@@ -100,7 +109,11 @@ fn decode_instruction(bytes: &[u8]) -> (OpCode, usize) {
     }
 }
 
-pub(crate) fn execute_function(ctx: &mut Context, func: &Func) -> Option<i32> {
+pub(crate) fn execute_function(
+    ctx: &mut Context,
+    func: &Func,
+    registry: &registry::ImportRegistry,
+) -> Option<i32> {
     // initialize locals with default values
     ctx.locals = func
         .locals
@@ -114,6 +127,22 @@ pub(crate) fn execute_function(ctx: &mut Context, func: &Func) -> Option<i32> {
         pc += size;
 
         match op_code {
+            OpCode::Call(index) => {
+                if index < ctx.locals.len() as u32 {
+                    // Local function
+                    unimplemented!("Calling local functions not implemented");
+                } else {
+                    // Imported function
+                    let func_name = format!("module_{}", index);
+                    if let Some(host_func) =
+                        registry.resolve_function("wasi_snapshot_preview1", &func_name)
+                    {
+                        host_func(ctx, &[]); // Example without args
+                    } else {
+                        panic!("Unknown import function");
+                    }
+                }
+            }
             OpCode::LocalGet(index) => {
                 let value = ctx.locals[index as usize];
                 ctx.stack.push(value);

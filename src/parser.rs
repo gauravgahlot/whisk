@@ -154,6 +154,107 @@ pub(crate) fn parse_code_section(payload: &[u8]) -> Vec<(Vec<(u32, u8)>, Vec<u8>
     entries
 }
 
+pub(crate) fn parse_import_section(payload: &[u8]) -> Vec<(String, String, u8)> {
+    let mut imports = Vec::new();
+    let mut idx = 0;
+
+    if payload.len() == 0 {
+        return imports;
+    }
+
+    // Decode the number of imports
+    let (import_count, len_bytes) = leb128::decode(&payload[idx..]);
+    idx += len_bytes;
+
+    for _ in 0..import_count {
+        // Parse module name
+        let (module_len, len_bytes) = leb128::decode(&payload[idx..]);
+        idx += len_bytes;
+        let module_name =
+            String::from_utf8(payload[idx..idx + module_len as usize].to_vec()).unwrap();
+        idx += module_len as usize;
+
+        // Parse import name
+        let (name_len, len_bytes) = leb128::decode(&payload[idx..]);
+        idx += len_bytes;
+        let name = String::from_utf8(payload[idx..idx + name_len as usize].to_vec()).unwrap();
+        idx += name_len as usize;
+
+        // Parse kind
+        let import_kind = payload[idx];
+        idx += 1;
+
+        imports.push((module_name, name, import_kind));
+    }
+
+    imports
+}
+
+pub(crate) fn parse_memory_section(payload: &[u8]) -> usize {
+    let mut idx = 0;
+    let (memory_count, len_bytes) = leb128::decode(&payload[idx..]);
+    idx += len_bytes;
+
+    if memory_count > 0 {
+        // Parse the first memory entry (initial page count)
+        let (min_pages, _len_bytes) = leb128::decode(&payload[idx..]);
+        min_pages as usize * 65536 // Convert pages to bytes (1 page = 64KiB)
+    } else {
+        0 // No memory defined
+    }
+}
+
+#[derive(PartialEq)]
+pub(crate) enum ExportKind {
+    Function,
+    Table,
+    Memory,
+    Global,
+}
+
+pub(crate) struct Export {
+    pub name: String,
+    pub kind: ExportKind,
+    pub index: usize, // Assume all function exports must have an index
+}
+
+pub(crate) fn parse_exports_section(payload: &[u8]) -> Vec<Export> {
+    let mut exports = Vec::new();
+    let mut idx = 0;
+
+    let count = payload[idx] as usize;
+    idx += 1;
+
+    for _ in 0..count {
+        let (name_len, len_bytes) = leb128::decode(&payload[idx..]);
+        idx += len_bytes;
+
+        let name = String::from_utf8(payload[idx..idx + name_len as usize].to_vec())
+            .expect("Invalid UTF-8 in export name");
+        idx += name_len as usize;
+
+        let kind = match payload[idx] {
+            0x00 => ExportKind::Function,
+            0x01 => ExportKind::Table,
+            0x02 => ExportKind::Memory,
+            0x03 => ExportKind::Global,
+            _ => panic!("Unknown export kind"),
+        };
+        idx += 1;
+
+        let (index, len_bytes) = leb128::decode(&payload[idx..]);
+        idx += len_bytes;
+
+        exports.push(Export {
+            name,
+            kind,
+            index: index as usize,
+        });
+    }
+
+    exports
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
