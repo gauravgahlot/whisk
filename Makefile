@@ -1,3 +1,8 @@
+.PHONY: build
+build:
+	@cargo build -q --release --target-dir $(HOME)/.cargo/bin/
+	@echo "Successfully installed 'whisk' in $(HOME)/.cargo/bin/"
+
 .PHONY: wat2wasm
 wat2wasm: # Convert wasm from text to binary format
 	wat2wasm samples/wat/empty.wat -o bin/wat/empty.wasm

@@ -2,7 +2,7 @@
   <h1><code>whisk</code></h1>
 
   <p>
-    <strong>A minimal <a href="https://webassembly.org/">WebAssembly</a> runtime</strong>, create for fun (and learning)
+    <strong>A minimal <a href="https://webassembly.org/">WebAssembly</a> runtime</strong>, created for fun (and learning)
   </p>
 
   <p>
@@ -11,14 +11,41 @@
   </p>
 </div>
 
-## Usage Example
+## How to use?
 
 ```sh
-# generate wasm modules
-make wat2wasm
+# clone the GitHub repository
+git clone https://github.com/gauravgahlot/whisk.git
+cd whisk
 
-# run a wasm module
-cargo run -- bin/wat/hello.wasm
+# build whisk
+make
+```
+
+### Examples
+
+#### **WebAssembly Text Format** (`.wat`)
+
+- Create a file with the following content and save it as `hello.wat`:
+
+```wat
+(module
+  (func (export "main")
+      (result i32)
+    i32.const 1
+    return))
+```
+
+- Build a WebAssembly module using `wat2wasm`:
+
+```sh
+wat2wasm hello.wat -o hello.wasm
+```
+
+- Run the module with `whisk`
+
+```sh
+whisk hello.wasm
 ```
 
 ## Resources
