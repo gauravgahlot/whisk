@@ -21,7 +21,9 @@ pub(crate) fn parse_sections(bytes: &[u8]) -> types::Sections {
             2 => sections.imports = parse_import_section(payload),
             3 => sections.functions = parse_function_section(payload),
             7 => sections.exports = parse_export_section(payload),
-            10 => sections.funcs = parse_code_section(payload, &sections.functions),
+            10 => {
+                sections.funcs = parse_code_section(payload, &sections.functions, &sections.types)
+            }
             _ => {} // Ignore other sections for now
         }
     }
@@ -149,7 +151,11 @@ pub(crate) fn parse_export_section(payload: &[u8]) -> Vec<types::Export> {
     exports
 }
 
-pub(crate) fn parse_code_section(payload: &[u8], function_indices: &[u32]) -> Vec<types::Func> {
+pub(crate) fn parse_code_section(
+    payload: &[u8],
+    function_indices: &[u32],
+    type_section: &[types::FuncSignature],
+) -> Vec<types::Func> {
     let mut funcs = Vec::new();
     let mut idx = 0;
 
@@ -168,10 +174,22 @@ pub(crate) fn parse_code_section(payload: &[u8], function_indices: &[u32]) -> Ve
         let body = payload[idx..idx + (entry_len as usize - locals_bytes)].to_vec();
         idx += entry_len as usize - locals_bytes;
 
-        // ensure safe indexing (if function_indices is too short, default to 0)
+        // Fetch signature index (default to 0 if missing)
         let signature_index = function_indices.get(i as usize).copied().unwrap_or(0);
 
+        // Fetch params from type section
+        let params = type_section
+            .get(signature_index as usize)
+            .map(|sig| {
+                sig.params
+                    .iter()
+                    .map(|&b| types::ValType::from(b))
+                    .collect()
+            })
+            .unwrap_or_else(Vec::new);
+
         funcs.push(types::Func {
+            params,
             locals,
             body,
             signature_index,
