@@ -1,6 +1,6 @@
 .PHONY: build
 build:
-	@cargo build -q --release --target-dir $(HOME)/.cargo/bin/
+	@cargo install -q --path .
 	@echo "Successfully installed 'whisk' in $(HOME)/.cargo/bin/"
 
 .PHONY: wat2wasm
@@ -12,6 +12,5 @@ wat2wasm: # Convert wasm from text to binary format
 .PHONY: rust2wasm
 rust2wasm: # Build rust samples to wasm binary format
 	cd samples/rust/plus_one && \
-		cargo build --target wasm32-wasi --release && \
-		cp target/wasm32-wasi/release/plus_one.wasm ../../../bin/rust/
-
+		cargo build --target wasm32-unknown-unknown --release && \
+		cp target/wasm32-unknown-unknown/release/plus_one.wasm ../../../bin/rust/

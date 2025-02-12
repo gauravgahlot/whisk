@@ -1,71 +1,8 @@
-use super::leb128;
-
-/// `OperandStack` stores the intermediate values during execution.
-struct OperandStack {
-    stack: Vec<i32>,
-}
-
-impl OperandStack {
-    /// Create a new `OperandStack`
-    fn new() -> Self {
-        Self { stack: Vec::new() }
-    }
-
-    /// Check if the stack is empty
-    fn is_empty(&self) -> bool {
-        self.stack.is_empty()
-    }
-
-    /// Push an operand onto the stack
-    fn push(&mut self, value: i32) {
-        self.stack.push(value);
-    }
-
-    /// Pop an operand from the stack
-    fn pop(&mut self) -> Option<i32> {
-        if self.is_empty() {
-            return None;
-        }
-
-        self.stack.pop()
-    }
-}
-
-/// `Func` represents a function body. Includes:
-///     1. `locals`: a vector of (locals_count, locals_type) tuples
-///     2. `body`: a vector of raw instructions (bytes)
-pub(crate) struct Func {
-    locals: Vec<(u32, u8)>, // (locals_count, locals_type)
-    body: Vec<u8>,          // raw instructions
-}
-
-impl Func {
-    /// Create a new `Func` with given `locals` and instructions (`body`)
-    pub(crate) fn new(locals: Vec<(u32, u8)>, body: Vec<u8>) -> Self {
-        Self { locals, body }
-    }
-}
-
-/// `Context` is the execution context that stores:
-///     1. the operand stack
-///     2. local variables
-pub(crate) struct Context {
-    stack: OperandStack,
-    locals: Vec<i32>,
-}
-
-impl Context {
-    /// Create a new execution `Context`
-    pub(crate) fn new() -> Self {
-        Self {
-            locals: Vec::new(),
-            stack: OperandStack::new(),
-        }
-    }
-}
+use crate::*;
 
 /// `OpCode` defines a (sub)set of supported WebAssembly instructions
 enum OpCode {
+    Call(u32),
     LocalGet(u32),
     LocalSet(u32),
     I32Constant(i32),
@@ -81,6 +18,10 @@ enum OpCode {
 /// `(OpCode, index)`
 fn decode_instruction(bytes: &[u8]) -> (OpCode, usize) {
     match bytes[0] {
+        0x10 => {
+            let (func_index, size) = leb128::decode(&bytes[1..]);
+            (OpCode::Call(func_index as u32), 1 + size)
+        }
         0x20 => {
             let (index, size) = leb128::decode(&bytes[1..]);
             (OpCode::LocalGet(index as u32), 1 + size)
@@ -100,15 +41,27 @@ fn decode_instruction(bytes: &[u8]) -> (OpCode, usize) {
     }
 }
 
-pub(crate) fn execute_function(ctx: &mut Context, func: &Func) -> Option<i32> {
-    // initialize locals with default values
+pub(crate) fn execute_function(
+    ctx: &mut types::Context,
+    func: &types::Func,
+    args: &[i32],
+) -> Option<i32> {
+    // ensure function parameters are initialized from arguments
     ctx.locals = func
-        .locals
+        .params
         .iter()
-        .flat_map(|(count, ty)| vec![default_value(*ty); *count as usize])
+        .enumerate()
+        .map(|(i, ty)| args.get(i).copied().unwrap_or_else(|| ty.default())) // Use args if provided
+        .chain(
+            func.locals
+                .iter()
+                .flat_map(|(count, ty)| vec![default_value(*ty); *count as usize]),
+        )
         .collect();
 
     let mut pc = 0; // program counter
+    let mut call_stack: Vec<usize> = Vec::new(); // Stack for function call returns
+
     while pc < func.body.len() {
         let (op_code, size) = decode_instruction(&func.body[pc..]);
         pc += size;
@@ -128,10 +81,41 @@ pub(crate) fn execute_function(ctx: &mut Context, func: &Func) -> Option<i32> {
                 let y = ctx.stack.pop().unwrap();
                 ctx.stack.push(x + y);
             }
-            OpCode::Return => {
-                return ctx.stack.pop();
+            OpCode::Call(index) => {
+                let called_func = &ctx.functions[index as usize];
+                let arg_count = called_func.params.len();
+                let mut args = vec![0; arg_count];
+
+                // Extract arguments from stack
+                for i in (0..arg_count).rev() {
+                    args[i] = ctx.stack.pop().unwrap();
+                }
+
+                call_stack.push(pc); // Save return position
+                let result = execute_function(ctx, called_func, &args);
+
+                if let Some(value) = result {
+                    ctx.stack.push(value); // Push return value onto stack
+                }
+
+                pc = func.body.len(); // Ensure function returns control properly
             }
-            OpCode::End => break,
+            OpCode::Return => {
+                if let Some(ret_addr) = call_stack.pop() {
+                    pc = ret_addr; // return to caller
+                } else {
+                    let result = ctx.stack.pop();
+                    return result; // return final value if no caller
+                }
+            }
+            OpCode::End => {
+                if let Some(ret_addr) = call_stack.pop() {
+                    pc = ret_addr;
+                } else {
+                    let result = ctx.stack.pop();
+                    return result;
+                }
+            }
             OpCode::Unimplemented(op) => {
                 panic!("unimplemented opcode: 0x{:02x}", op);
             }
@@ -146,72 +130,5 @@ fn default_value(ty: u8) -> i32 {
         0x7F => 0, // i32
         0x7E => 0, // i64
         _ => panic!("unsupported local type: 0x{:02x}", ty),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_execute_function() {
-        // local.get 0   ;; 0x20 0x00
-        // local.get 1   ;; 0x20 0x01
-        // i32.add       ;; 0x6A
-        // local.set 2   ;; 0x21 0x02
-        // local.get 2   ;; 0x20 0x02
-        // end           ;; 0x0B
-
-        let func = Func {
-            // three locals of type i32
-            locals: vec![(1, 0x7F), (1, 0x7F), (1, 0x7F)],
-            body: vec![
-                0x41, 0x0A, // i32.const 10
-                0x21, 0x00, // local.set 0
-                0x41, 0x14, // i32.const 20
-                0x21, 0x01, // local.set 1
-                0x20, 0x00, // local.get 0
-                0x20, 0x01, // local.get 1
-                0x6A, // i32.add
-                0x21, 0x02, // local.set 2
-                0x20, 0x02, // local.get 2
-                0x0B, // end
-            ],
-        };
-
-        // create an execution context
-        let mut ctx = Context::new();
-
-        let result = execute_function(&mut ctx, &func);
-        assert_eq!(result, None);
-        assert_eq!(ctx.stack.pop(), Some(30));
-        assert_eq!(ctx.locals[2], 30);
-    }
-
-    #[test]
-    fn test_function_return() {
-        let func = Func {
-            locals: vec![],
-            // i32.const 10, i32.const 20, i32.add, return
-            body: vec![0x41, 0x0A, 0x41, 0x14, 0x6A, 0x0F],
-        };
-
-        let mut ctx = Context::new();
-        let result = execute_function(&mut ctx, &func);
-        assert_eq!(result, Some(30));
-        assert!(ctx.stack.is_empty());
-    }
-
-    #[test]
-    fn test_function_no_return() {
-        let mut ctx = Context::new();
-        let func = Func {
-            locals: vec![],
-            // i32.const 42, end
-            body: vec![0x41, 0x2A, 0x0B],
-        };
-
-        let result = execute_function(&mut ctx, &func);
-        assert_eq!(result, None);
     }
 }

@@ -1,60 +1,38 @@
-use super::leb128;
+use std::vec;
 
-use std::collections::HashMap;
+use crate::{leb128, types};
 
-/// 4-byte magic number. The string `\0asm`.
-const MAGIC_NUMBER: &[u8] = &[0x00, 0x61, 0x73, 0x6D];
-
-/// The WebAssembly binary format version. Current version is 1.
-const WASM_BIN_FMT_VERSION: &[u8] = &[0x1, 0x00, 0x00, 0x00];
-
-pub(crate) fn validate(bytes: &[u8]) -> bool {
-    &bytes[0..4] == MAGIC_NUMBER && &bytes[4..8] == WASM_BIN_FMT_VERSION
-}
-
-pub(crate) fn parse_sections(bytes: &[u8]) -> HashMap<u8, Vec<u8>> {
-    let mut sections: HashMap<u8, Vec<u8>> = HashMap::new();
+pub(crate) fn parse_sections(bytes: &[u8]) -> types::Sections {
+    let mut sections = types::Sections::default();
     let mut idx = 0;
 
     while idx < bytes.len() {
-        if idx >= bytes.len() {
-            break; // Prevent out-of-bounds access
-        }
-
         let section_id = bytes[idx];
         idx += 1;
 
-        // Decode the LEB128 payload length
-        if idx >= bytes.len() {
-            break; // Prevent out-of-bounds access
-        }
-
-        let (payload_len, len_bytes) = leb128::decode(&bytes[idx..]);
+        let (section_size, len_bytes) = leb128::decode(&bytes[idx..]);
         idx += len_bytes;
 
-        // Ensure we have enough bytes for the payload
-        if idx + payload_len as usize > bytes.len() {
-            panic!(
-                "Invalid payload length: idx={}, payload_len={}, bytes.len()={}",
-                idx,
-                payload_len,
-                bytes.len()
-            );
+        let payload = &bytes[idx..idx + section_size as usize];
+        idx += section_size as usize;
+
+        match section_id {
+            1 => sections.types = parse_type_section(payload),
+            2 => sections.imports = parse_import_section(payload),
+            3 => sections.functions = parse_function_section(payload),
+            7 => sections.exports = parse_export_section(payload),
+            10 => {
+                sections.funcs = parse_code_section(payload, &sections.functions, &sections.types)
+            }
+            _ => {} // Ignore other sections for now
         }
-
-        // Extract the payload
-        let payload = bytes[idx..idx + payload_len as usize].to_vec();
-        idx += payload_len as usize;
-
-        // Insert the section into the map
-        sections.insert(section_id, payload);
     }
 
     sections
 }
 
-pub(crate) fn parse_type_section(payload: &[u8]) -> Vec<(Vec<u8>, Vec<u8>)> {
-    let mut functions = Vec::new();
+pub(crate) fn parse_type_section(payload: &[u8]) -> Vec<types::FuncSignature> {
+    let mut funcs = Vec::new();
     let mut idx = 0;
 
     if payload.len() == 0 {
@@ -78,80 +56,174 @@ pub(crate) fn parse_type_section(payload: &[u8]) -> Vec<(Vec<u8>, Vec<u8>)> {
         let params = payload[idx..idx + params_count].to_vec();
         idx += params_count;
 
-        let result_count = payload[idx] as usize;
+        let returns_count = payload[idx] as usize;
         idx += 1;
-        let results = payload[idx..idx + result_count].to_vec();
-        idx += result_count;
+        let returns = payload[idx..idx + returns_count].to_vec();
+        idx += returns_count;
 
-        functions.push((params, results));
+        funcs.push(types::FuncSignature { params, returns });
     }
 
-    functions
+    funcs
+}
+
+pub(crate) fn parse_import_section(payload: &[u8]) -> Vec<types::Import> {
+    let mut imports = Vec::new();
+    let mut idx = 0;
+
+    let (import_count, len_bytes) = leb128::decode(&payload[idx..]);
+    idx += len_bytes;
+
+    for _ in 0..import_count {
+        // read module name
+        let (module, bytes_read) = read_wasm_string(&payload[idx..]);
+        idx += bytes_read;
+
+        // read import name
+        let (name, bytes_read) = read_wasm_string(&payload[idx..]);
+        idx += bytes_read;
+
+        // read the import kind
+        let kind = match payload[idx] {
+            0x00 => types::ImportKind::Function,
+            0x01 => types::ImportKind::Table,
+            0x02 => types::ImportKind::Memory,
+            0x03 => types::ImportKind::Global,
+            _ => panic!("Unknown import kind: {}", payload[idx]),
+        };
+        idx += 1;
+
+        imports.push(types::Import { module, name, kind });
+    }
+
+    imports
 }
 
 pub(crate) fn parse_function_section(payload: &[u8]) -> Vec<u32> {
-    let mut functions = Vec::new();
     let mut idx = 0;
+    let (function_count, len_bytes) = leb128::decode(&payload[idx..]);
+    idx += len_bytes;
 
-    let fn_count = payload[idx] as usize;
-    idx += 1; // move past the function count
-
-    for _ in 0..fn_count {
-        let type_index = payload[idx] as u32;
-        idx += 1;
-        functions.push(type_index);
+    let mut type_indices = Vec::new();
+    for _ in 0..function_count {
+        let (type_index, type_bytes) = leb128::decode(&payload[idx..]);
+        idx += type_bytes;
+        type_indices.push(type_index);
     }
 
-    functions
+    type_indices
 }
 
-/// Returns `Vec<(Vec<(locals_count, locals_type)>, Vec<instructions>)`>
-pub(crate) fn parse_code_section(payload: &[u8]) -> Vec<(Vec<(u32, u8)>, Vec<u8>)> {
-    let mut entries = Vec::new();
-
+pub(crate) fn parse_export_section(payload: &[u8]) -> Vec<types::Export> {
+    let mut exports = Vec::new();
     let mut idx = 0;
-    let entry_count = payload[idx];
+
+    let count = payload[idx] as usize;
     idx += 1;
 
-    for _ in 0..entry_count {
-        // decode the size of the function entry
-        let (fn_len, len_bytes) = leb128::decode(&payload[idx..]);
+    for _ in 0..count {
+        let (name_len, len_bytes) = leb128::decode(&payload[idx..]);
         idx += len_bytes;
 
-        // extract the function body
-        let fn_body = &payload[idx..idx + fn_len as usize];
-        idx += fn_len as usize;
+        let name = String::from_utf8(payload[idx..idx + name_len as usize].to_vec())
+            .expect("Invalid UTF-8 in export name");
+        idx += name_len as usize;
 
-        // parse function body
-        let mut bidx = 0;
+        let kind = match payload[idx] {
+            0x00 => types::ExportKind::Function,
+            0x01 => types::ExportKind::Table,
+            0x02 => types::ExportKind::Memory,
+            0x03 => types::ExportKind::Global,
+            _ => panic!("Unknown export kind"),
+        };
+        idx += 1;
 
-        // parse the local count
-        let (locals_count, len_bytes) = leb128::decode(&fn_body[bidx..]);
-        bidx += len_bytes;
+        let (index, len_bytes) = leb128::decode(&payload[idx..]);
+        idx += len_bytes;
 
-        let mut locals = vec![];
-        for _ in 0..locals_count {
-            // parse each local declaration (count, type)
-            let (count, count_bytes) = leb128::decode(&fn_body[bidx..]);
-            bidx += count_bytes;
-
-            if bidx < fn_body.len() {
-                // 1 byte for the type (e.g., 0x7F for i32, 0x7E for i64)
-                let local_type = fn_body[bidx];
-                bidx += 1;
-
-                locals.push((count, local_type));
-            }
-        }
-
-        // rest is the instruction sequence
-        let instructions = fn_body[bidx..].to_vec();
-
-        // store the locals, and instructions for the entry
-        entries.push((locals, instructions))
+        exports.push(types::Export {
+            name,
+            kind,
+            index: index as usize,
+        });
     }
 
-    entries
+    exports
+}
+
+pub(crate) fn parse_code_section(
+    payload: &[u8],
+    function_indices: &[u32],
+    type_section: &[types::FuncSignature],
+) -> Vec<types::Func> {
+    let mut funcs = Vec::new();
+    let mut idx = 0;
+
+    // number of function bodies
+    let (entry_count, len_bytes) = leb128::decode(&payload[idx..]);
+    idx += len_bytes;
+
+    for i in 0..entry_count {
+        // function body length
+        let (entry_len, len_bytes) = leb128::decode(&payload[idx..]);
+        idx += len_bytes;
+
+        let (locals, locals_bytes) = parse_locals(&payload[idx..]);
+        idx += locals_bytes;
+
+        let body = payload[idx..idx + (entry_len as usize - locals_bytes)].to_vec();
+        idx += entry_len as usize - locals_bytes;
+
+        // Fetch signature index (default to 0 if missing)
+        let signature_index = function_indices.get(i as usize).copied().unwrap_or(0);
+
+        // Fetch params from type section
+        let params = type_section
+            .get(signature_index as usize)
+            .map(|sig| {
+                sig.params
+                    .iter()
+                    .map(|&b| types::ValType::from(b))
+                    .collect()
+            })
+            .unwrap_or_else(Vec::new);
+
+        funcs.push(types::Func {
+            params,
+            locals,
+            body,
+            signature_index,
+        });
+    }
+
+    funcs
+}
+
+fn read_wasm_string(bytes: &[u8]) -> (String, usize) {
+    let (length, len_bytes) = leb128::decode(bytes);
+    let string_bytes = &bytes[len_bytes..len_bytes + length as usize];
+    let string = String::from_utf8(string_bytes.to_vec()).expect("Invalid UTF-8 string");
+    (string, len_bytes + length as usize)
+}
+
+fn parse_locals(payload: &[u8]) -> (Vec<(u32, u8)>, usize) {
+    let mut locals = Vec::new();
+    let mut idx = 0;
+
+    let (local_count, len_bytes) = leb128::decode(&payload[idx..]); // Number of local declarations
+    idx += len_bytes;
+
+    for _ in 0..local_count {
+        let (count, count_bytes) = leb128::decode(&payload[idx..]); // Number of variables
+        idx += count_bytes;
+
+        let value_type = payload[idx]; // Variable type (e.g., 0x7F for i32)
+        idx += 1;
+
+        locals.push((count, value_type));
+    }
+
+    (locals, idx) // Return parsed locals + bytes consumed
 }
 
 #[cfg(test)]
@@ -191,39 +263,33 @@ mod tests {
             0x0B, // Instructions: local.get 0, i32.const 1, call 0, end
         ];
 
-        // Validate the binary
-        assert!(validate(&wasm_binary));
-
         // Parse the sections
         let sections = parse_sections(&wasm_binary[8..]); // Skip the header
 
         // Verify Type Section
-        let type_section = sections.get(&0x01).unwrap();
-        let types = parse_type_section(type_section);
-        assert_eq!(types.len(), 1);
-        assert_eq!(types[0].0.len(), 0); // No parameters
-        assert_eq!(types[0].1.len(), 1); // One result
-        assert_eq!(types[0].1[0], 0x7F); // i32 result
+        assert_eq!(sections.types.len(), 1);
+        assert_eq!(sections.types[0].params, vec![]);
+        assert_eq!(sections.types[0].returns, vec![0x7F]); // i32 return type
 
         // Verify Function Section
-        let function_section = sections.get(&0x03).unwrap();
-        let functions = parse_function_section(function_section);
-        assert_eq!(functions.len(), 1);
-        assert_eq!(functions[0], 0);
+        assert_eq!(sections.functions.len(), 1);
+        assert_eq!(sections.functions[0], 0); // Function index 0 has type index 0
 
         // Verify Code Section
-        let code_section = sections.get(&0x0A).unwrap();
-        let code_entries = parse_code_section(code_section);
-        assert_eq!(code_entries.len(), 2);
+        assert_eq!(sections.funcs.len(), 2);
 
-        // First function body
-        let (locals, instructions) = &code_entries[0];
-        assert_eq!(locals.len(), 0);
-        assert_eq!(instructions, &[0x20, 0x00, 0x20, 0x01, 0x6A, 0x0B]);
+        // First function: local.get 0, local.get 1, i32.add, end
+        assert_eq!(sections.funcs[0].locals.len(), 0);
+        assert_eq!(
+            sections.funcs[0].body,
+            vec![0x20, 0x00, 0x20, 0x01, 0x6A, 0x0B]
+        );
 
-        // Second function body
-        let (locals, instructions) = &code_entries[1];
-        assert_eq!(locals.len(), 0); // No locals
-        assert_eq!(instructions, &[0x20, 0x00, 0x41, 0x01, 0x10, 0x00, 0x0B]);
+        // Second function: local.get 0, i32.const 1, call 0, end
+        assert_eq!(sections.funcs[1].locals.len(), 0);
+        assert_eq!(
+            sections.funcs[1].body,
+            vec![0x20, 0x00, 0x41, 0x01, 0x10, 0x00, 0x0B]
+        );
     }
 }
