@@ -7,6 +7,7 @@ enum OpCode {
     LocalSet(u32),
     I32Constant(i32),
     I32Add,
+    I32Mul,
     Return,
     End,
     Unimplemented(u8),
@@ -35,6 +36,7 @@ fn decode_instruction(bytes: &[u8]) -> (OpCode, usize) {
             (OpCode::I32Constant(value as i32), 1 + size)
         }
         0x6A => (OpCode::I32Add, 1),
+        0x6C => (OpCode::I32Mul, 1),
         0x0F => (OpCode::Return, 1),
         0x0B => (OpCode::End, 1),
         op => (OpCode::Unimplemented(op), 1),
@@ -80,6 +82,11 @@ pub(crate) fn execute_function(
                 let x = ctx.stack.pop().unwrap();
                 let y = ctx.stack.pop().unwrap();
                 ctx.stack.push(x + y);
+            }
+            OpCode::I32Mul => {
+                let x = ctx.stack.pop().unwrap();
+                let y = ctx.stack.pop().unwrap();
+                ctx.stack.push(x * y);
             }
             OpCode::Call(index) => {
                 let called_func = &ctx.functions[index as usize];

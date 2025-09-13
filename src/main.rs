@@ -94,7 +94,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             let result = executor::execute_function(&mut ctx, func, &function_args);
             if let Some(val) = result {
-                println!("Result: {}", val);
+                println!("{val}");
             }
         } else {
             eprintln!(
